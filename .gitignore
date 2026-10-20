@@ -1,0 +1,13 @@
+# Secrets and local config: never commit
+.env
+.env.*
+*.key
+*.pem
+secrets*
+
+# Raw n8n exports before sanitising (only the cleaned file goes to workflow/)
+*_raw.json
+*-raw.json
+
+# macOS
+.DS_Store
