@@ -77,6 +77,7 @@ Observed behaviour worth noting: for the same invalid input (`abc`) VirusTotal r
 - **Input validation before external calls.** Untrusted input is never placed into an outgoing URL without checking it first. This prevents wasted quota and manipulation of the request path that is sent with the API key.
 - **No internal data leakage.** Private and reserved IP ranges are rejected, so internal addresses are not disclosed to external services.
 - **Test data only.** All tests used public IPs and personal test accounts. No corporate data was used.
+- **Sanitised export.** Before publishing, the workflow JSON was scanned for secrets and identifiers: Telegram chat_id replaced with a placeholder, n8n `instanceId` redacted, no pinned execution data.
 
 ## Example outputs
 
@@ -86,6 +87,7 @@ Observed behaviour worth noting: for the same invalid input (`abc`) VirusTotal r
 | Well-known IP (8.8.8.8): noisy feeds, clean aggregated scores | ![LOW](docs/screenshots/03-telegram-low.png) |
 | One source failed (simulated 401) | ![Partial](docs/screenshots/04-telegram-partial.png) |
 | Private IP rejected, no API calls made | ![Rejected](docs/screenshots/05-telegram-rejected.png) |
+| Same rejection on the canvas: only the false branch ran, HTTP nodes were not executed | ![Canvas rejected](docs/screenshots/07-canvas-rejected.png) |
 | Request without webhook token rejected | ![Unauthorized](docs/screenshots/06-webhook-unauthorized.png) |
 
 ## How to run
