@@ -1,0 +1,329 @@
+{
+  "name": "P1 - IP Enrichment",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=https://www.virustotal.com/api/v3/ip_addresses/{{ $json.ip }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        256,
+        -32
+      ],
+      "id": "99d5408c-68ae-42aa-8dd8-efcaf532f3ef",
+      "name": "VirusTotal",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "P7Twx9fc4n191TvT",
+          "name": "VirusTotal Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://api.abuseipdb.com/api/v2/check",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "ipAddress",
+              "value": "={{ $json.ip }}"
+            },
+            {
+              "name": "maxAgeInDays",
+              "value": "90"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        256,
+        160
+      ],
+      "id": "8f2214f1-0db9-49d1-9d92-d14f7f79a580",
+      "name": "AbuseIPDB",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "BUmd893pRU89yveO",
+          "name": "AbuseIPDB Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {
+          "includeUnpaired": false
+        }
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        464,
+        48
+      ],
+      "id": "42bb3c45-6653-4c91-b6fa-b295062b63a9",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ip-enrich",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -336,
+        48
+      ],
+      "id": "ec95ac33-eedb-4baf-bd5a-93d2ea953c37",
+      "name": "Webhook",
+      "webhookId": "719b1f87-fdab-4cfb-9f73-f50548b751d8",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "IpELY2oLZwgrRb9A",
+          "name": "Webhook Secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Вхідні дані: IP з Webhook і повні відповіді обох API\nconst ip = $('Webhook').first().json.body.ip;\nconst vtRes = $('VirusTotal').first().json;\nconst abRes = $('AbuseIPDB').first().json;\n\n// 2. Перекладаємо статус-код у зрозуміле повідомлення\nfunction describeError(service, code) {\n  if (code === 200) return null; // усе гаразд, помилки немає\n  if (code === 401 || code === 403) return `${service}: помилка автентифікації (${code}), перевірте ключ у Credentials`;\n  if (code === 429) return `${service}: вичерпано ліміт запитів (429)`;\n  if (code === 400 || code === 422) return `${service}: некоректний запит (${code}), перевірте формат IP`;\n  if (code === 404) return `${service}: дані не знайдено (404)`;\n  return `${service}: неочікувана відповідь (${code})`;\n}\n\nconst errors = [\n  describeError('VirusTotal', vtRes.statusCode),\n  describeError('AbuseIPDB', abRes.statusCode)\n].filter(Boolean); // прибираємо null, лишаємо тільки реальні помилки\n\nconst vtOk = vtRes.statusCode === 200;\nconst abOk = abRes.statusCode === 200;\n\n// 3. Беремо дані лише з тих джерел, які відповіли успішно\nconst vtStats = vtOk ? vtRes.body.data.attributes.last_analysis_stats : {};\nconst abuse = abOk ? abRes.body.data : {};\n\nconst abuseScore = abuse.abuseConfidenceScore ?? 0;\nconst vtMalicious = vtStats.malicious ?? 0;\nconst vtSuspicious = vtStats.suspicious ?? 0;\n\n// 4. Пороги\nconst ABUSE_HIGH = 50;\nconst VT_HIGH = 3;\nconst ABUSE_MEDIUM = 20;\n\n// 5. Вердикт\nlet verdict = 'LOW';\nif (abuseScore >= ABUSE_HIGH || vtMalicious >= VT_HIGH) {\n  verdict = 'HIGH';\n} else if (abuseScore >= ABUSE_MEDIUM || vtMalicious >= 1 || vtSuspicious >= 1) {\n  verdict = 'MEDIUM';\n}\n\n// 6. Якщо джерела не відповіли, не видаємо оманливий LOW\nif (!vtOk && !abOk) {\n  verdict = 'UNKNOWN';\n} else if (errors.length > 0 && verdict === 'LOW') {\n  verdict = 'LOW (неповні дані)';\n}\n\nreturn [{\n  json: {\n    ip,\n    verdict,\n    abuse_score: abOk ? `${abuseScore}%` : 'n/a',\n    vt_malicious: vtOk ? vtMalicious : 'n/a',\n    vt_suspicious: vtOk ? vtSuspicious : 'n/a',\n    isp: abuse.isp ?? 'n/a',\n    country: abuse.countryCode ?? 'n/a',\n    is_tor: abuse.isTor ?? 'n/a',\n    is_whitelisted: abuse.isWhitelisted ?? 'n/a',\n    errors: errors.length > 0 ? errors.join('; ') : 'none'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        48
+      ],
+      "id": "a1110fe9-0a03-48e3-8f7c-9e6cbc00ee11",
+      "name": "Risk Scoring"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Беремо значення з тіла запиту і прибираємо пробіли по краях\nconst raw = $input.first().json.body?.ip;\nconst ip = typeof raw === 'string' ? raw.trim() : '';\n\n// 2. Перевірка формату IPv4: 4 числа від 0 до 255, розділені крапками\nconst parts = ip.split('.');\nconst isIPv4 = parts.length === 4 && parts.every(p =>\n  /^\\d{1,3}$/.test(p) &&          // лише 1-3 цифри\n  Number(p) <= 255 &&             // не більше 255\n  String(Number(p)) === p         // без провідних нулів (\"01\")\n);\n\n// 3. Приватні та службові діапазони: репутації в них немає,\n//    і внутрішні адреси не варто відправляти стороннім сервісам\nfunction isPrivateOrReserved(ip) {\n  const [a, b] = ip.split('.').map(Number);\n  return a === 0 || a === 10 || a === 127 ||\n    (a === 100 && b >= 64 && b <= 127) ||   // CGNAT\n    (a === 169 && b === 254) ||             // link-local\n    (a === 172 && b >= 16 && b <= 31) ||\n    (a === 192 && b === 168) ||\n    a >= 224;                                // multicast і зарезервовані\n}\n\n// 4. Вирішуємо і пояснюємо причину\nlet valid = true;\nlet reason = 'ok';\nif (!ip) {\n  valid = false; reason = 'поле ip порожнє або відсутнє';\n} else if (!isIPv4) {\n  valid = false; reason = 'не є коректною IPv4-адресою';\n} else if (isPrivateOrReserved(ip)) {\n  valid = false; reason = 'приватна або службова адреса, перевірка не потрібна';\n}\n\nreturn [{ json: { ip: ip || String(raw), valid, reason } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -144,
+        48
+      ],
+      "id": "bfa44684-27fb-47b0-9b5e-ad6ed9b97ae6",
+      "name": "Validate Input"
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_CHAT_ID",
+        "text": "=Invalid input rejected\nValue: {{ $json.ip }}\nReason: {{ $json.reason }}\nNo API calls were made.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        16,
+        288
+      ],
+      "id": "749de0e1-7ce2-4e56-89d3-1f6cde5b5bed",
+      "name": "Invalid input alert",
+      "webhookId": "fe2aa8f1-dbd2-4708-be01-85ec701db5b2",
+      "credentials": {
+        "telegramApi": {
+          "id": "Dw3kadBQCxWohUX3",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "96e67bb1-d2e0-4796-bc06-7af045358731",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        16,
+        48
+      ],
+      "id": "8df9556a-db97-4b0d-8049-e3dee493ba9d",
+      "name": "Is valid IP?"
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_CHAT_ID",
+        "text": "=IP enrichment report\nIP: {{ $json.ip }}\nVerdict: {{ $json.verdict }}\nAbuseIPDB score: {{ $json.abuse_score }}\nVirusTotal: {{ $json.vt_malicious }} malicious, {{ $json.vt_suspicious }} suspicious\nISP: {{ $json.isp }} ({{ $json.country }})\nTor: {{ $json.is_tor }} | Whitelisted: {{ $json.is_whitelisted }}\nErrors: {{ $json.errors }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        784,
+        48
+      ],
+      "id": "317f0351-1ce1-48cb-845f-957410a619d2",
+      "name": "Send report",
+      "webhookId": "2a56c41e-8207-42f8-9e73-52eeadbcc309",
+      "credentials": {
+        "telegramApi": {
+          "id": "Dw3kadBQCxWohUX3",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "VirusTotal": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AbuseIPDB": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Risk Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Risk Scoring": {
+      "main": [
+        [
+          {
+            "node": "Send report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Is valid IP?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is valid IP?": {
+      "main": [
+        [
+          {
+            "node": "VirusTotal",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "AbuseIPDB",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Invalid input alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "1bcebce9-7174-4679-9f69-9be1182feab9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "REDACTED"
+  },
+  "nodeGroups": [],
+  "id": "1uEc5fosuwprge9S",
+  "tags": []
+}
